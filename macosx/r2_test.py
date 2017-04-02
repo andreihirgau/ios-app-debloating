@@ -27,11 +27,11 @@ def replace_with_nops(func, inf, outf):
 	ofile.write(ifile.read(int(func[ADDR], 0)))
 	nop = get_nop(KS_ARCH_X86, KS_MODE_64, NOP_CODE)
 
-	for i in range(0, int(func[SIZE])):
+	for i in range(1, int(func[SIZE])):
 		ba = bytearray(nop)
 		ofile.write(ba)
 
-	ifile.seek(int(func[SIZE], 0), 1)
+	ifile.seek(int(func[SIZE], 0) - 1, 1)
 	ofile.write(ifile.read())
 
 	ifile.close()
@@ -50,7 +50,7 @@ def main(argc, argv):
 			if argv[2] in line:
 				info = line.split()
 				funcs.append((info[0], info[2], info[3]))
-		
+
 		if len(funcs) > 1:
 			print "Found more functions that match {}".format(argv[2])
 			for func in funcs:
@@ -58,10 +58,10 @@ def main(argc, argv):
 		else:
 			replace_with_nops(funcs[0], argv[1], argv[1] + ".nop")
 	r2.quit()
-			
+
 if __name__ == "__main__":
 	if len(sys.argv) < 2:
 		usage()
 	else:
 		main(len(sys.argv), sys.argv)
-	
+
