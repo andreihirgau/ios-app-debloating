@@ -1,0 +1,161 @@
+\chapter{Introduction}
+
+As CPU performance and memory capacity grow, it becomes more easy for developers
+to focus on the efficiency of the development process instead of the efficiency of
+the actual software. As a result, applications get more bloated with features that
+are implemented in a needlessly complicated manner, that the end-user may not even utilize.
+This is not only a performance loss, but also a potential security hole due to the
+increased attack surface of the generated binary file(s).
+
+\section{Software bloating}
+Software bloating essentially represents the addition of unnecessary code in an application \cite{explor_bloat}.
+Some examples of practices through which an application can get bloated are:
+\begin{compactitem}
+	\item[$\bullet$] using containers in an improper way
+	\item[$\bullet$] bad specification of the product
+	\item[$\bullet$] poor deisgn choices
+\end{compactitem}
+Software bloat can be classified into two major types \cite{bloating_article}:
+\begin{compactitem}
+	\item[$\bullet$] memory bloat is generally caused by inefficient usage of containers or data structures
+	\item[$\bullet$] execution bloat is caused by unnecessary operations
+\end{compactitem}
+Both of these types of bloating are undesirable and can have a serious impact on the
+performance of a program, although they can affect different systems in different ways.
+For example, memory bloating can be worse on an embedded system that only does simple
+data processing but has a very limited amount of memory.
+
+\section{Purpose}
+The purpose of this project is to create a tool that can be used to
+analyse the level of bloating for iOS apps and determine which code can be removed in
+certain use cases. Furthermore, the user will be able to use the tool to rewrite
+the binary to turn off those unwanted or useless features in those apps.
+
+As presented in the introduction of this chapter, reducing the level of bloating
+is important for improving the performance of the application and reducing the
+risk of it becoming compromised via a security hole. In particular for iOS apps,
+debloating them can lead to extended battery life, due to reduced resource usage 
+and extra storage space.
+
+There are certain debloating solutions proposed currently, however they are insufficient
+for the purposes of this project, as is explained in the section below.
+
+\section{State of the Art}
+The debloating solutions currently available are not enough to accomplish the
+purposes of this project. Tools like Resurrector \cite{resurrector} (profiles
+object lifetime information) and LeakChecker \cite{leak_checker} (tool for checking
+memory leaks in managed languages) have too specific targets (Java) in order
+to be used for the purposes of this project.
+
+There are two approaches when analysing code for debloating:
+\begin{compactitem}
+	\item[$\bullet$] static analysis
+	\item[$\bullet$] dynamic analysis
+\end{compactitem}
+
+Dynamic analysis is done at runtime and is generally used for profiling the application,
+in order to learn bloat patterns or determine what portion(s) of code are executed
+by a certain feature \cite{bloating_article}. An application of dynamic analysis
+is called dynamic slicing. This technique is used in order to determine what are the exact
+instructions that produce a certain output given an execution of the program.
+A state of the art variant of dynamic slicing is "Abstract Dynamic Slicing" \cite{dynamic_slicing},
+which improves regular dynamic slicing by severely reducing the amount of data analysed
+(the slicing is done over bounded abstract domains).
+
+Static analysis is done offline and can be used for identifying the semantics of certain
+operations. For example, static analysis has been used in order to identify container semantics
+ \cite{container}. This has been used in order to detect inefficiencies when using container
+operations.
+
+In general, static and dynamic analyses are used in conjunction with one another in order
+to detect and eliminate the bloated areas of a program.
+
+\section{Motivation}
+Bloating is becoming increasingly prevalent nowadays. A look at the size of the UNIX true shell command
+reveals that it has increased by over 300\% in only 4 years (from 8377 bytes in 2010 to 27168 bytes in 2014) \cite{feast_bloat_mitigation}.
+That is a big increase, especially considering that the only feature this shell command is actually used for is to return a true value.
+
+Moreover, bloating effectively prevents an application from running at maximum efficiency. Scalability
+and efficiency are two very important properties for a program and by debloating an application
+those two properties can be maximized, therefore research in this area should be a priority.
+
+Finally, the current state of the art does not offer a good solution for automatically debloating
+iOS apps. The only way to debloat an iOS app at the moment is to manually
+check its source code for bloating causes, as the existing automatic solutions are too specific
+to be used for iOS apps.
+
+\section{Objectives}
+The main objective of this project is to create a tool that can be used to tailor the functionality
+of an iOS app according to what its user wants. This is achieved by debloating the app of the unused
+features or the features that are irrelevant to what the user wants.
+
+This objective can be broken down into smaller objectives:
+\begin{compactitem}
+	\item[$\bullet$] find out what are the particularities of an iOS app binary by analysing it
+	\item[$\bullet$] determine what code can be removed from that iOS app given the information found at the previous step
+	\item[$\bullet$] rewrite the binary iOS file with the bloated code removed
+\end{compactitem}
+
+\section{Use Cases}
+This tool will be used to removed unwanted features form an iOS app binary file and thus
+reduce the level of bloating. This is useful to any user who wants to:
+\begin{compactitem}
+	\item[$\bullet$] minimize an application's attack surface by reducing its size
+	\item[$\bullet$] increase an application's performance
+	\item[$\bullet$] reduce the resource usage on the phone
+\end{compactitem}
+
+As seen from the points above, this tool benefits users who want to optimize and secure
+their apps.
+
+\section{Building Blocks}
+The basic building blocks for this project are:
+\begin{enumerate}
+	\item Binary Analysis Platform (bap) - used for analysing a binary file's properties
+	\item radare2 - reversing framework, used for determining a function's offset in a file
+	\item Keystone Engine - assembler, used to reconstruct the binary file
+\end{enumerate}
+In addition to these tools, iNalyzer was also used to inspect the iOS binaries beforehand,
+in order to find particularities.
+This tool is written in Python, since it makes the process of writing code and testing it very
+easy and all of the tools cited above (except iNalyzer) have Python bindings.
+
+This tool has been tested on Mac OS X version 10.12.4.
+
+\section{Architectural Overview}
+The architecture of the project is not complicated, as seen in the figure below.
+
+\insfigshw{arch.pdf}%
+	{Software Architecture Overview}%
+	{Software Architecture Overview}%
+	{fig.arch_overview}{1}
+
+The two main components of the project are described below.
+\subsection{iOS Binary Analyser}
+The purpose of this component is to scan the binary file for particularities in order
+to find potential features that bloat the application. This is accomplished using the
+Binary Analysis Platform. The component looks through a database of patterns built beforehand
+using iNalyzer and checks whether the current binary file matches any of them. The matched
+patterns are sent to the Debloater.
+
+\subsection{Debloater}
+This component receives the patterns and the original file from the binary analyser as well as
+the user command. The user is shown a list of all the patterns found along with the features that
+they enable and chooses the ones he wants removed from the binary. After that, the debloater
+removes the code associated with the patterns, recalulates the address offsets in the file and
+writes the new, debloated binary.
+
+\section{Report 1 Conclusions}
+Currently, the debloater of the project has the capability of replacing a function's body with nop's, given its name.
+Going forward, the project will advance in 3 directions:
+\begin{enumerate}
+	\item Analyze iOS binaries with iNalyzer in order to find particularities about their feature creep.
+	\item Improve the debloater so that it completely removes the given function body. This involves
+	recalculating the offsets in the binaries and will be particularly tricky for indirect function calls or jumps.
+	\item Research for a way to automatically map code to a feature, instead of relying on a database.
+\end{enumerate}
+
+The short-term plan is for the tool to have an internal databse of patterns for certain features through
+which it will search when analysing a binary file.
+The long-term goal is for the iOS Binary Analyser in the project to be completely autonomous of said database,
+and being able to recognize automatically which code determines a certain feature.
