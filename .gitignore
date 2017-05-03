@@ -1,3 +1,6 @@
 *.pyc
 .DS_Store
 *.swp
+doc/report1/out
+doc/report1/out/*
+doc/report1/report1.pdf
