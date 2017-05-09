@@ -140,6 +140,10 @@ class HeaderMangler(object):
 			elif self.header_metadata.nlists[i][0].n_type == 36 and "_" in self.header_metadata.nlists[i][1]:
 				self.header_metadata.nlists[i][0].n_value -= self.total_fn_size
 				self.header_metadata.nlists[i - 1][0].n_value -= self.total_fn_size
+			# fix this hardcode
+			elif "_main" in self.header_metadata.nlists[i][1]:
+				self.header_metadata.nlists[i][0].n_value -= self.total_fn_size
+				self.header_metadata.nlists[i - 1][0].n_value -= self.total_fn_size
 
 		return len(self.header_metadata.nlists)
 
