@@ -1,5 +1,10 @@
 import struct
 
+ADDR = 0
+SIZE = 1
+DIFF = 2
+PREV_FUNC = 3
+
 ULEB_DATA = 0
 ULEB_OFF = 1
 
@@ -40,3 +45,20 @@ def decode_uleb128(ba, start):
 			break
 
 	return (decoded, i)
+
+def encode_uleb128(value, start):
+	enc = bytearray()
+
+	while True:
+		byte = value & 0x7f
+		
+		value >>= 7
+		if value != 0:
+			byte |= 0x80
+
+		enc += bytes(byte)
+
+		if value == 0:
+			break
+
+	return enc

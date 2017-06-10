@@ -9,7 +9,7 @@ from util import *
 from header_types import *
 
 # relevant load commands
-LCS = [ LC_DYLD_INFO_ONLY, LC_SYMTAB, LC_DYSYMTAB, LC_LOAD_DYLINKER, LC_MAIN, LC_LOAD_DYLIB, LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLIB_CODE_SIGN_DRS ]
+LCS = [ LC_DYLD_INFO_ONLY, LC_SYMTAB, LC_DYSYMTAB, LC_LOAD_DYLINKER, LC_MAIN, LC_LOAD_DYLIB, LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLIB_CODE_SIGN_DRS, LC_ENCRYPTION_INFO, LC_DATA_IN_CODE ]
 
 FUNCS_START_BA = 0
 FUNCS_START_SIZE = 1
@@ -29,6 +29,8 @@ class HeaderMetadata(object):
 		self.sections = {}
 		self.lcs = {}
 
+		self.arm = True
+
 		# list of symbols from the file's symbol table
 		self.nlists = None
 		self.funcs_start_data = None
@@ -39,6 +41,7 @@ class HeaderMetadata(object):
 		self.textoffset = 0
 		self.textsize = 0
 		self.textvmaddr = 0
+		self.TEXTsize = 0
 
 		self.stubsoff = 0
 		self.stubssize = 0
@@ -51,6 +54,9 @@ class HeaderMetadata(object):
 
 		self.shoff = 0
 		self.shsize = 0
+
+		self.gotoff = 0
+		self.gotsize = 0
 
 		self.nlsymoff = 0
 		self.nlsymsize = 0
@@ -73,14 +79,20 @@ class HeaderMetadata(object):
 		nlists = []
 
 		for i in xrange(symtab_cmd.nsyms):
-			cmd = swap_nlist64_mem(nlist_64.from_fileobj(fh))
+			if self.arm:
+				cmd = swap_nlist32_mem(nlist_32.from_fileobj(fh))
+			else:
+				cmd = swap_nlist64_mem(nlist_64.from_fileobj(fh))
 			if cmd.n_un == 0:
 				nlists.append((cmd, ''))
 			else:
 				sym_name = strtab[cmd.n_un:strtab.find('\x00', cmd.n_un)]
 				nlists.append((cmd, sym_name))
 
-		self.symsize = NLIST64_SIZE * len(nlists)
+		if self.arm:
+			self.symsize = NLIST32_SIZE * len(nlists)
+		else:
+			self.symsize = NLIST64_SIZE * len(nlists)
 		fh.close()
 		return nlists
 
@@ -116,15 +128,15 @@ class HeaderMetadata(object):
 		return refs
 
 	def collect_metadata(self):
-
 		# scan for segments info
 		got_text = False
 		for h in self.macho.headers:
 			for (lc, cmd, data) in h.commands:
-				if lc.cmd == LC_SEGMENT_64:
+				if lc.cmd == LC_SEGMENT_64 or lc.cmd == LC_SEGMENT:
 					if SEG_TEXT in cmd.segname:
 						got_text = True
 						self.textvmaddr = cmd.vmaddr
+						self.TEXTsize = cmd.filesize
 					elif SEG_DATA in cmd.segname:
 						self.dataoff = cmd.fileoff
 					if not got_text:
@@ -135,7 +147,7 @@ class HeaderMetadata(object):
 						if SECT_TEXT in sec.sectname:
 							self.textoffset = sec.offset
 							self.textsize = sec.size
-						if "__stubs" in sec.sectname:
+						if "__stubs" in sec.sectname or "__picsymbolstub4" in sec.sectname:
 							self.stubsoff = sec.offset
 							self.stubssize = sec.size
 						if "__stub_helper" in sec.sectname:
@@ -168,7 +180,7 @@ class HeaderMetadata(object):
 					elif lc.cmd == LC_SYMTAB:
 						self.symoff = cmd.symoff
 					self.lcs[lc.cmd] = cmd
-
+					
 		if self.verbose:
 			print self.sections
 			print ""
