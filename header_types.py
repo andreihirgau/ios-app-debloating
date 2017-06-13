@@ -4,7 +4,15 @@ from util import *
 NLIST64_SIZE = 16
 NLIST32_SIZE = 12
 
-class la_ptr(Structure):
+LA_PTR_SIZE_32 = 4
+LA_PTR_SIZE_64 = 8
+
+class la_ptr_32(Structure):
+	_fields_ = (
+		('ptr', p_uint),
+	)
+
+class la_ptr_64(Structure):
 	_fields_ = (
 		('ptr', p_ulonglong),
 	)

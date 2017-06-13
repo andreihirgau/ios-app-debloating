@@ -1,5 +1,7 @@
 import struct
 
+LOGGER_NAME = "main_logger"
+
 ADDR = 0
 SIZE = 1
 DIFF = 2

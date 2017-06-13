@@ -7,6 +7,7 @@ from macholib.mach_o import *
 from macholib.ptypes import *
 from util import *
 from header_types import *
+from binary_metadata import *
 
 # relevant load commands
 LCS = [ LC_DYLD_INFO_ONLY, LC_SYMTAB, LC_DYSYMTAB, LC_LOAD_DYLINKER, LC_MAIN, LC_LOAD_DYLIB, LC_FUNCTION_STARTS, LC_DATA_IN_CODE, LC_DYLIB_CODE_SIGN_DRS, LC_ENCRYPTION_INFO, LC_DATA_IN_CODE ]
@@ -17,11 +18,12 @@ FUNCS_START_SIZE = 1
 ULONG_MAX = 4294967295
 
 class HeaderMetadata(object):
-	def __init__(self, macho, verbose = False):
+	def __init__(self, macho, binary_class, verbose = False):
 		self.verbose = verbose
 		self.reset()
 
 		self.macho = macho
+		self.binary_class = binary_class
 		self.collect_metadata()
 
 	def reset(self):
@@ -29,7 +31,7 @@ class HeaderMetadata(object):
 		self.sections = {}
 		self.lcs = {}
 
-		self.arm = True
+		self.binary_class = None
 
 		# list of symbols from the file's symbol table
 		self.nlists = None
@@ -79,7 +81,7 @@ class HeaderMetadata(object):
 		nlists = []
 
 		for i in xrange(symtab_cmd.nsyms):
-			if self.arm:
+			if self.binary_class == CLASS_MACHO:
 				cmd = swap_nlist32_mem(nlist_32.from_fileobj(fh))
 			else:
 				cmd = swap_nlist64_mem(nlist_64.from_fileobj(fh))
@@ -89,10 +91,11 @@ class HeaderMetadata(object):
 				sym_name = strtab[cmd.n_un:strtab.find('\x00', cmd.n_un)]
 				nlists.append((cmd, sym_name))
 
-		if self.arm:
+		if self.binary_class == CLASS_MACHO:
 			self.symsize = NLIST32_SIZE * len(nlists)
 		else:
 			self.symsize = NLIST64_SIZE * len(nlists)
+			
 		fh.close()
 		return nlists
 

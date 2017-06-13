@@ -10,11 +10,10 @@ from macholib.mach_o import *
 from util import *
 from x86_64_mangler import *
 from arm_mangler import *
+from binary_metadata import *
 
 SEC_OFFSET = 0
 SEC_SIZE = 1
-
-LA_PTR_SIZE_64 = 8
 
 OUT_NAME = "removed.out"
 
@@ -25,7 +24,7 @@ def dec_syms(syms, amount):
 		return syms - amount
 
 class HeaderMangler(object):
-	def __init__(self, exec_path):
+	def __init__(self, binary_class, arch, exec_path):
 		self.path = exec_path
 		self.mangled_text_segment = False
 		self.header_analyzed = False
@@ -35,6 +34,8 @@ class HeaderMangler(object):
 		self.fname = None
 		self.faddr = 0
 		self.fsize = 0
+		self.arch = arch
+		self.binary_class = binary_class
 
 		self.total_shrink = 0
 
@@ -45,12 +46,18 @@ class HeaderMangler(object):
 
 		self.__TEXT_orig = None
 
-		self.x86_64_mangler = X86_64_Mangler()
-		self.arm_mangler = ARM_Mangler()
+		self.binary_class = binary_class
+
+		if arch == ARCH_ARM:
+			self.code_mangler = ARM_Mangler()
+		elif arch == ARCH_X86_64:
+			self.code_mangler = X86_64_Mangler()
+		else:
+			raise Exception("Unknown arch: " + arch)
 
 	def analyze_header(self):
 		self.macho = MachO(self.path)
-		self.header_metadata = HeaderMetadata(self.macho)
+		self.header_metadata = HeaderMetadata(self.macho, self.binary_class)
 		self.header_metadata.read_tables()
 		self.header_analyzed = True
 
@@ -65,15 +72,24 @@ class HeaderMangler(object):
 	def adjust_la_pointers(self, ladata, shrink):
 		off = 0
 		new_ladata = ""
+		size = LA_PTR_SIZE_32 if self.binary_class == CLASS_MACHO else LA_PTR_SIZE_64
 
 		while off < len(ladata):
-			lptr = la_ptr.from_str(ladata[off:(off + LA_PTR_SIZE_64)])
-			lptr.ptr = big_swap_u64(lptr.ptr)
-			lptr.ptr -= shrink
-			lptr.ptr = little_swap_u64(lptr.ptr)
-			new_ladata += lptr.to_str()
-
-			off += LA_PTR_SIZE_64
+			if self.binary_class == CLASS_MACHO64:
+				lptr = la_ptr_64.from_str(ladata[off:(off + size)])
+				lptr.ptr = big_swap_u64(lptr.ptr)
+				lptr.ptr -= shrink
+				lptr.ptr = little_swap_u64(lptr.ptr)
+				new_ladata += lptr.to_str()
+				off += LA_PTR_SIZE_64
+			else:
+				lptr = la_ptr_32.from_str(ladata[off:(off + size)])
+				lptr.ptr = big_swap_u32(lptr.ptr)
+				lptr.ptr -= shrink
+				lptr.ptr = little_swap_u32(lptr.ptr)
+				new_ladata += lptr.to_str()
+				off += LA_PTR_SIZE_32
+			
 		return new_ladata
 
 	def read_TEXT_segment(self, in_fh):
@@ -98,7 +114,7 @@ class HeaderMangler(object):
 			size = all_funcs[ordered_funcs[i]][SIZE]
 			if offset + size > self.header_metadata.textsize:
 				break
-			out_fh.write(self.arm_mangler.adjust_fn(all_funcs[ordered_funcs[i]], self.__TEXT_orig[offset:(offset + size)], self.header_metadata.textvmaddr, funcs, all_funcs))
+			out_fh.write(self.code_mangler.adjust_fn(all_funcs[ordered_funcs[i]], self.__TEXT_orig[offset:(offset + size)], self.header_metadata.textvmaddr, funcs, all_funcs))
 
 		stubsoff = self.header_metadata.stubsoff - self.header_metadata.textoffset
 		diff += (stubsoff - self.header_metadata.textsize)
@@ -106,7 +122,7 @@ class HeaderMangler(object):
 
 		# Adjust stubs
 		stubs = self.__TEXT_orig[stubsoff:(stubsoff + self.header_metadata.stubssize)]
-		out_fh.write(self.arm_mangler.adjust_stubs(stubs, self.header_metadata.textvmaddr, self.header_metadata.stubsoff, self.total_fn_size))
+		out_fh.write(self.code_mangler.adjust_stubs(stubs, self.header_metadata.textvmaddr, self.header_metadata.stubsoff, self.total_fn_size))
 
 		shoff = self.header_metadata.shoff - self.header_metadata.textoffset
 		start = self.header_metadata.textsize + self.header_metadata.stubssize + diff
@@ -114,7 +130,7 @@ class HeaderMangler(object):
 
 		# Adjust stub helper
 		stub_helper = self.__TEXT_orig[shoff:(shoff + self.header_metadata.shsize)]
-		out_fh.write(self.arm_mangler.adjust_stub_helper(stub_helper, self.header_metadata.textvmaddr, self.header_metadata.shoff, self.total_fn_size))
+		out_fh.write(self.code_mangler.adjust_stub_helper(stub_helper, self.header_metadata.textvmaddr, self.header_metadata.shoff, self.total_fn_size))
 
 		out_fh.write(self.__TEXT_orig[(shoff + self.header_metadata.shsize):])
 
@@ -141,17 +157,21 @@ class HeaderMangler(object):
 
 		# write the new symtable
 		for sym in self.header_metadata.nlists:
-		 	swap_nlist32_file(sym[0]).to_fileobj(out_fh)
+			if self.binary_class == CLASS_MACHO:
+		 		swap_nlist32_file(sym[0]).to_fileobj(out_fh)
+		 	else:
+		 		swap_nlist64_file(sym[0]).to_fileobj(out_fh)
 
 		# read and write the rest of the file (dysymtable, string table etc.)
 		in_fh.seek(self.header_metadata.symoff + self.header_metadata.symsize)
 		out_fh.write(in_fh.read())
 
 	def adjust_symtable(self, fname):
+		ntype = 36 if self.binary_class == CLASS_MACHO64 else 15
 		copy = list(self.header_metadata.nlists)
 		for i in xrange(len(copy) - 1, -1, -1):
 			if fname in self.header_metadata.nlists[i][1]:
-				if self.header_metadata.nlists[i][0].n_type == 36 or self.header_metadata.nlists[i][0].n_type == 15:
+				if self.header_metadata.nlists[i][0].n_type == ntype:
 					del self.header_metadata.nlists[i - 1]
 					del self.header_metadata.nlists[i - 1]
 					del self.header_metadata.nlists[i - 1]
@@ -159,7 +179,8 @@ class HeaderMangler(object):
 					i -= 4
 				else:
 					del self.header_metadata.nlists[i]
-			elif (self.header_metadata.nlists[i][0].n_type == 36 or self.header_metadata.nlists[i][0].n_type == 15) and "_" in self.header_metadata.nlists[i][1]:
+			elif self.header_metadata.nlists[i][0].n_type == ntype and "_" in self.header_metadata.nlists[i][1]:
+				print "n_value: " + str(self.header_metadata.nlists[i][0].n_value)
 				self.header_metadata.nlists[i][0].n_value -= self.total_fn_size
 				self.header_metadata.nlists[i - 1][0].n_value -= self.total_fn_size
 			elif "_main" in self.header_metadata.nlists[i][1]:
@@ -210,15 +231,15 @@ class HeaderMangler(object):
 			return off - shrink
 
 
-	def remove_funcs(self, in_file, funcs, all_funcs, ordered_funcs):
+	def remove_funcs(self, funcs, all_funcs, ordered_funcs):
 		if not self.header_analyzed:
 			self.analyze_header()
 
-		fh = open(in_file, 'rb')
+		fh = open(self.path, 'rb')
 		self.read_TEXT_segment(fh)
 
 		for f in funcs:
-			self.remove_func(in_file, f, all_funcs[f], all_funcs)
+			self.remove_func(f, all_funcs[f], all_funcs)
 
 		self.adjust_function_starts(funcs, all_funcs)
 
@@ -227,7 +248,7 @@ class HeaderMangler(object):
 		self.new_write_sections(fh, out_fh, funcs, all_funcs, ordered_funcs)
 		out_fh.close()
 
-	def remove_func(self, in_file, fname, func, all_funcs):
+	def remove_func(self, fname, func, all_funcs):
 		fsize = func[SIZE]
 		faddr = func[ADDR]
 		diff = func[DIFF]
