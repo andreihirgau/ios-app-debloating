@@ -10,6 +10,10 @@ class X86_64_Mangler(object):
 		self.cs_mi.detail = True
 		self.verbose = verbose
 
+	# shouldn't be needed on x86_64
+	def pad_text(self, text, bytes):
+		pass
+
 	def adjust_fn(self, func_meta, func_body, vmaddr, rem_funcs, all_funcs):
 		new_fn = bytearray()
 		for insn in self.cs_mi.disasm(func_body, vmaddr + func_meta[ADDR]):

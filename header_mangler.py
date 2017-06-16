@@ -43,6 +43,7 @@ class HeaderMangler(object):
 
 		self.total_fn_size = 0
 		self.zero_pad = 0
+		self.text_pad = 0
 
 		self.__TEXT_orig = None
 
@@ -114,7 +115,10 @@ class HeaderMangler(object):
 			size = all_funcs[ordered_funcs[i]][SIZE]
 			if offset + size > self.header_metadata.textsize:
 				break
-			out_fh.write(self.code_mangler.adjust_fn(all_funcs[ordered_funcs[i]], self.__TEXT_orig[offset:(offset + size)], self.header_metadata.textvmaddr, funcs, all_funcs))
+			out_fh.write(self.code_mangler.adjust_fn(all_funcs[ordered_funcs[i]], self.__TEXT_orig[offset:(offset + size)], self.header_metadata.textvmaddr, self.text_pad, funcs, all_funcs))
+
+		print "padding __text with: " + str(self.text_pad)
+		out_fh.write(self.code_mangler.get_pad(self.text_pad))
 
 		stubsoff = self.header_metadata.stubsoff - self.header_metadata.textoffset
 		diff += (stubsoff - self.header_metadata.textsize)
@@ -241,12 +245,81 @@ class HeaderMangler(object):
 		for f in funcs:
 			self.remove_func(f, all_funcs[f], all_funcs)
 
+		# after we've made the changes to remove the functions, adjust the load commands
+		self.adjust_lcs()
 		self.adjust_function_starts(funcs, all_funcs)
 
 		out_fh = open(OUT_NAME, 'wb')
 		self.write_header(out_fh, self.total_shrink)
 		self.new_write_sections(fh, out_fh, funcs, all_funcs, ordered_funcs)
 		out_fh.close()
+
+	def adjust_lcs(self):
+		# stubs are in ARM mode (4 bytes / insn) and __text is in thumb mode (2 bytes / insn) 
+		# force the alignment of the stubs region to 4 bytes
+		if self.arch == ARCH_ARM and self.fsize % 4 != 0:
+			self.text_pad = 2
+			self.fsize -= self.text_pad
+			self.total_fn_size -= self.text_pad
+			self.zero_pad -= self.text_pad
+
+		# we can't possibly remove an odd number of bytes from ARM code, so something has gone wrong
+		if self.arch == ARCH_ARM:
+			assert(self.fsize % 4 == 0)
+
+		segtext = self.header_metadata.sections["__TEXT"]["__TEXT"]
+		secttext = self.header_metadata.sections["__TEXT"]["__text"]
+
+		symoff = self.header_metadata.lcs[LC_SYMTAB].symoff
+
+		for segname, _ in self.header_metadata.sections.iteritems():
+			for sectname, cmd in self.header_metadata.sections[segname].iteritems():
+				if isinstance(cmd, segment_command_64) or isinstance(cmd, segment_command):
+					if SEG_DATA in cmd.segname:
+						cmd.fileoff -= self.shrink_by
+					if cmd.fileoff > secttext.offset:
+						pass
+					if SEG_LINKEDIT in cmd.segname:
+						cmd.filesize = cmd.filesize - self.total_shrink - self.shrink_by
+				elif SEG_TEXT in segname and SECT_TEXT not in cmd.sectname:
+					cmd.addr -= self.fsize
+					cmd.offset -= self.fsize
+				else:
+					if SECT_TEXT in cmd.sectname:
+						cmd.size += self.text_pad
+						print "text"
+					if cmd.offset > secttext.offset and SEG_TEXT in segname:
+						print "here"
+						cmd.offset -= self.fsize
+
+		segtext.filesize -= self.shrink_by
+		secttext.size -= self.fsize
+
+		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].rebase_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].rebase_off, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].bind_off, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].weak_bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].weak_bind_off, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].lazy_bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].lazy_bind_off, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].export_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].export_off, symoff, self.shrink_by, self.total_shrink)
+
+		self.header_metadata.lcs[LC_DYSYMTAB].tocoff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].tocoff, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYSYMTAB].indirectsymoff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].indirectsymoff, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYSYMTAB].modtaboff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].modtaboff, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYSYMTAB].extrefsymoff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].extrefsymoff, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYSYMTAB].extreloff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].extreloff, symoff, self.shrink_by, self.total_shrink)
+		self.header_metadata.lcs[LC_DYSYMTAB].locreloff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].locreloff, symoff, self.shrink_by, self.total_shrink)
+
+		if LC_ENCRYPTION_INFO_64 in self.header_metadata.lcs:
+			self.header_metadata.lcs[LC_ENCRYPTION_INFO_64].cryptoff = self.adjust_offset(self.header_metadata.lcs[LC_ENCRYPTION_INFO_64].cryptoff, symoff, self.shrink_by, self.total_shrink)
+
+		self.header_metadata.lcs[LC_FUNCTION_STARTS].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_FUNCTION_STARTS].dataoff, symoff, self.shrink_by, self.total_shrink)
+
+		self.header_metadata.lcs[LC_DATA_IN_CODE].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_DATA_IN_CODE].dataoff, symoff, self.shrink_by, self.total_shrink)
+
+		if LC_DYLIB_CODE_SIGN_DRS in self.header_metadata.lcs:
+			self.header_metadata.lcs[LC_DYLIB_CODE_SIGN_DRS].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_DYLIB_CODE_SIGN_DRS].dataoff, symoff, self.shrink_by, self.total_shrink)
+
+		self.header_metadata.lcs[LC_SYMTAB].symoff -= self.shrink_by
+		self.header_metadata.lcs[LC_SYMTAB].stroff -= self.total_shrink
 
 	def remove_func(self, fname, func, all_funcs):
 		fsize = func[SIZE]
@@ -274,66 +347,21 @@ class HeaderMangler(object):
 		segtext = self.header_metadata.sections["__TEXT"]["__TEXT"]
 		secttext = self.header_metadata.sections["__TEXT"]["__text"]
 
+		# wipe unnecessary symbols
 		diff_syms = len(self.header_metadata.nlists)
 		no_syms = self.adjust_symtable(fname)
 		diff_syms -= no_syms
 
 		# add the size of the number of symbols wiped from the symtable
-		current_shrink = self.shrink_by + (self.header_metadata.lcs[LC_SYMTAB].nsyms - no_syms) * NLIST64_SIZE
+		if self.binary_class == CLASS_MACHO64:
+			current_shrink = self.shrink_by + (self.header_metadata.lcs[LC_SYMTAB].nsyms - no_syms) * NLIST64_SIZE
+		else:
+			current_shrink = self.shrink_by + (self.header_metadata.lcs[LC_SYMTAB].nsyms - no_syms) * NLIST32_SIZE
 		self.total_shrink += current_shrink
 		self.header_metadata.lcs[LC_SYMTAB].nsyms = no_syms
-		symoff = self.header_metadata.lcs[LC_SYMTAB].symoff
-		self.header_metadata.lcs[LC_SYMTAB].symoff -= self.shrink_by
-		self.header_metadata.lcs[LC_SYMTAB].stroff = self.header_metadata.lcs[LC_SYMTAB].stroff - current_shrink
-
-		segtextaddr = segtext.vmaddr
-		segtextoff = segtext.fileoff
-		secttextaddr = secttext.addr
-
-		for segname, _ in self.header_metadata.sections.iteritems():
-			for sectname, cmd in self.header_metadata.sections[segname].iteritems():
-				if isinstance(cmd, segment_command_64) or isinstance(cmd, segment_command):
-					if SEG_DATA in cmd.segname:
-						cmd.fileoff -= self.shrink_by
-					if cmd.fileoff > secttext.offset:
-						pass
-					if SEG_LINKEDIT in cmd.segname:
-						cmd.filesize = cmd.filesize - current_shrink - self.shrink_by
-				elif SEG_TEXT in segname and SECT_TEXT not in cmd.sectname:
-					cmd.addr -= self.fsize
-					cmd.offset -= self.fsize
-				else:
-					if cmd.offset > secttext.offset and SEG_TEXT in segname:
-						cmd.offset -= self.fsize
-
-		segtext.filesize -= self.shrink_by
-		secttext.size -= self.fsize
-
-		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].rebase_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].rebase_off, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].bind_off, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].weak_bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].weak_bind_off, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].lazy_bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].lazy_bind_off, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].export_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].export_off, symoff, self.shrink_by, current_shrink)
-
-		self.header_metadata.lcs[LC_DYSYMTAB].tocoff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].tocoff, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYSYMTAB].indirectsymoff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].indirectsymoff, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYSYMTAB].modtaboff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].modtaboff, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYSYMTAB].extrefsymoff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].extrefsymoff, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYSYMTAB].extreloff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].extreloff, symoff, self.shrink_by, current_shrink)
-		self.header_metadata.lcs[LC_DYSYMTAB].locreloff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].locreloff, symoff, self.shrink_by, current_shrink)
 
 		if self.entry_func[ADDR] > self.faddr:
 			self.header_metadata.lcs[LC_MAIN].entryoff -= self.fsize
-
-		if LC_ENCRYPTION_INFO_64 in self.header_metadata.lcs:
-			self.header_metadata.lcs[LC_ENCRYPTION_INFO_64].cryptoff = self.adjust_offset(self.header_metadata.lcs[LC_ENCRYPTION_INFO_64].cryptoff, symoff, self.shrink_by, current_shrink)
-
-		self.header_metadata.lcs[LC_FUNCTION_STARTS].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_FUNCTION_STARTS].dataoff, symoff, self.shrink_by, current_shrink)
-
-		self.header_metadata.lcs[LC_DATA_IN_CODE].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_DATA_IN_CODE].dataoff, symoff, self.shrink_by, current_shrink)
-
-		if LC_DYLIB_CODE_SIGN_DRS in self.header_metadata.lcs:
-			self.header_metadata.lcs[LC_DYLIB_CODE_SIGN_DRS].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_DYLIB_CODE_SIGN_DRS].dataoff, symoff, self.shrink_by, current_shrink)
 
 		self.header_metadata.lcs[LC_DYSYMTAB].nlocalsym = dec_syms(self.header_metadata.lcs[LC_DYSYMTAB].nlocalsym, diff_syms)
 		self.header_metadata.lcs[LC_DYSYMTAB].iextdefsym = dec_syms(self.header_metadata.lcs[LC_DYSYMTAB].iextdefsym, diff_syms)

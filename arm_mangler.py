@@ -28,7 +28,24 @@ class ARM_Mangler(object):
 
 		self.verbose = verbose
 
-	def adjust_fn(self, func_meta, func_body, vmaddr, rem_funcs, all_funcs):
+	def get_pad(self, byte_count):
+		if byte_count % 4 == 0:
+			return ''
+
+		text = bytearray()
+
+		# we can't pad ARM code with an odd number of bytes
+		assert(byte_count % 2 == 0)
+
+		# pad the __text section with nops (thumb mode -> 2 bytes per nop)
+		while byte_count > 0:
+			encoding, count = self.ks_thumb_mi.asm(bytes("nop"))
+			text += bytearray(encoding)
+			byte_count -= 2
+
+		return text
+
+	def adjust_fn(self, func_meta, func_body, vmaddr, pad, rem_funcs, all_funcs):
 		new_fn = bytearray()
 		self.verbose = False
 
@@ -110,6 +127,7 @@ class ARM_Mangler(object):
 								diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
 							total_disp = total_disp - all_funcs[func][SIZE] - diff
 
+					total_disp += pad
 					reg = self.movw.op_str[:self.movw.op_str.find(",")]
 
 					# now generate and write the new movt and movw instructions with the low and high bits of the new address
@@ -141,8 +159,11 @@ class ARM_Mangler(object):
 					new_fn += bytearray(encoding)
 					self.movt = None
 
-				if insn.id == ARM_INS_BLX:
+				if len(insn.operands) == 1 and insn.operands[0].type == ARM_OP_IMM and insn.id == ARM_INS_BLX:
 					for i in insn.operands:
+						if i.type != ARM_OP_IMM:
+							print "NOT IMM"
+							break
 						total_disp = i.value.imm
 						for func in rem_funcs:
 							if insn.address < vmaddr + all_funcs[func][ADDR]:
@@ -153,6 +174,7 @@ class ARM_Mangler(object):
 
 						# current address is pc - 4 for thumb mode
 						asm_str = insn.mnemonic + " " + hex(total_disp - insn.address + 4)
+						print hex(total_disp)
 						encoding, count = self.ks_thumb_mi.asm(bytes(asm_str))
 						new_fn += bytearray(encoding)
 				else:
@@ -188,7 +210,7 @@ class ARM_Mangler(object):
 			data += total_removed
 			packed = struct.pack('<I', data)
 			stubs = stubs[:crt_pos] + packed + stubs[(crt_pos + 4):]
-			
+		
 		return stubs
 
 	def adjust_stub_helper(self, stub_helper, vmaddr, helperoff, total_removed):

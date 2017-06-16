@@ -1,27 +1,33 @@
+CLASS_MACHO 						= 0
+CLASS_MACHO64						= 1
+
+OS_OSX 								= 0
+OS_IOS 								= 1
+
+ARCH_X86_64 						= 0
+ARCH_ARM 							= 1
+
+ANALYSIS_TYPE_UNCALLED_FUNCS 		= 0
+ANALYSIS_TYPE_FRAMEWORK_DATABASE 	= 1
+
 import r2pipe
-import analysis
+import uncalled_functions_analysis
+import framework_database_analysis
 from util import *
-
-CLASS_MACHO 	= 0
-CLASS_MACHO64	= 1
-
-OS_OSX 			= 0
-OS_IOS 			= 1
-
-ARCH_X86_64 	= 0
-ARCH_ARM 		= 1
 
 class UnsupportedBinaryException(Exception):
 	def __init__(self, message):
 		Exception.__init__(self, message)
 
 class BinaryMetadata(object):
-	def __init__(self, binary, verbose = False):
+	def __init__(self, binary, analysis = ANALYSIS_TYPE_UNCALLED_FUNCS, verbose = False):
 		self.binary = binary
 		self.verbose = verbose
 		self.binary_class = None
 		self.arch = None
 		self.os = None
+		self.analysis_type = analysis
+		self.analysis = uncalled_functions_analysis if analysis == ANALYSIS_TYPE_UNCALLED_FUNCS else framework_database_analysis
 
 		self.r2 = r2pipe.open(binary, ['-B', ' 0x0'])
 		info = self.r2.cmd('i')
@@ -52,13 +58,12 @@ class BinaryMetadata(object):
 				else:
 					raise UnsupportedBinaryException("Unsupported os: " + os)
 
-	def get_func_info(self):
+	def get_unused_funcs_info(self, unused_funcs):
 		all_funcs = {}
 		ordered_funcs = []
 		info = None
 		prev_func = None
 
-		unused_funcs = analysis.run(self.binary, self.arch)
 		self.r2.cmd('aaa')
 		results = self.r2.cmd("afl")
 		funcs = []
@@ -79,6 +84,7 @@ class BinaryMetadata(object):
 		 	prev_func = fname
 
 		 	for f in unused_funcs:
+		 		print fname
 				if f == fname:
 					funcs.append(info[3].replace('sym.', ''))
 
@@ -86,6 +92,39 @@ class BinaryMetadata(object):
 			return None
 
 		return [funcs, all_funcs, ordered_funcs]
+
+	def get_framework_funcs_info(self, framework_funcs):
+		all_funcs = []
+
+		for framework_data in framework_funcs:
+			all_funcs += framework_data[1]
+
+		return self.get_unused_funcs_info(all_funcs)
+
+	def get_func_info(self):
+		analysis_data = self.analysis.run(self.binary, self.arch)
+
+		if self.analysis_type == ANALYSIS_TYPE_UNCALLED_FUNCS:
+			return self.get_unused_funcs_info(analysis_data)
+		else:
+			print "Found {} frameworks:".format(len(analysis_data))
+			for i in xrange(0, len(analysis_data)):
+				print "{} {}".format(i + 1, analysis_data[i][0])
+			
+			return self.get_framework_funcs_info(analysis_data)
+			# if len(analysis_data) == 1:
+			# 	ans = raw_input("Do you wish to remove {}?(y/n)\n".format(analysis_data[i][0]))
+			# 	if ans == 'y':
+			# 		return self.get_framework_funcs_info(analysis_data)
+			# 	else:
+			# 		return None
+			# else:
+			# 	ans = raw_input("Type the number of the framework that you wish to remove from the app ({}-{}, 0 exits):\n".format(0, len(analysis_data)))
+			# 	n = int(ans)
+			# 	if n == 0:
+			# 		return None
+			# 	else:
+			# 		return self.get_framework_funcs_info(analysis_data)
 	
-	def cleanup(self):	
+	def cleanup(self):
 		self.r2.quit()

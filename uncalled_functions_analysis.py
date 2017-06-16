@@ -19,7 +19,7 @@ def run(binary, arch, verbose = False):
 	subs = proj.program.subs
 
 	for sub in subs:
-		if sub.name != "_main" and " " not in sub.name:
+		if sub.name != "_main" and "stub helpers" not in sub.name:
 			funcs.add(sub.name)
 
 	if verbose:
