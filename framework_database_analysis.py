@@ -4,19 +4,39 @@ import logging
 from binary_metadata import *
 from util import LOGGER_NAME
 
-frameworks = ["Photos.framework"]
+def build_fw_data(data_path):
+	frameworks = []
+	framework_funcs = {}
+	funcs_framework = {}
+	last_framework = None
 
-framework_funcs = {}
-framework_funcs["Photos.framework"] = ["__AppDelegate_imageManager_", "__AppDelegate_setImageManager:_"]
+	with open(data_path, 'r') as fh:
+		for line in fh:
+			if line == '\n':
+				continue
 
-funcs_framework = {}
-funcs_framework["__AppDelegate_imageManager_"] = "Photos.framework"
-funcs_framework["__AppDelegate_setImageManager:_"] = "Photos.framework"
+			# remove the trailing '\n'
+			line = line[:-1]
+			if line[len(line) - 10:] == ".framework":
+				last_framework = line
+				frameworks.append(line)
+			elif last_framework is None:
+				raise Exception("Invalid framework data file: " + data_path)
+			else:
+				if last_framework not in framework_funcs:
+					framework_funcs[last_framework] = [line]
+				else:
+					framework_funcs[last_framework].append(line)
+				funcs_framework[line] = last_framework
 
-def run(binary, arch = ARCH_ARM, verbose = False):
+	return [frameworks, framework_funcs, funcs_framework]
+
+def run(binary, arch = ARCH_ARM, r2 = None, data_path = "data/frameworks.dat", verbose = False):
 	logger = logging.getLogger(LOGGER_NAME)
 	funcs = set()
 	proj = bap.run(binary)
+
+	frameworks, framework_funcs, funcs_framework = build_fw_data(data_path)
 
 	if arch == ARCH_X86_64:
 		raise UnsupportedBinaryException("Unsupported arch: x86_64")

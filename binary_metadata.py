@@ -74,7 +74,7 @@ class BinaryMetadata(object):
 			else:
 				end_addr = -1
 			info = line.split()
-			fname = info[3].replace('sym.', '')
+			fname = line[(line.rfind(" ") + 1):].replace("sym.", '')
 
 		 	diff = 0 if end_addr == -1 else int(info[0], 0) - end_addr
 		 	if prev_func is not None:
@@ -84,9 +84,8 @@ class BinaryMetadata(object):
 		 	prev_func = fname
 
 		 	for f in unused_funcs:
-		 		print fname
 				if f == fname:
-					funcs.append(info[3].replace('sym.', ''))
+					funcs.append(fname)
 
 		if len(funcs) == 0:
 			return None
@@ -94,15 +93,10 @@ class BinaryMetadata(object):
 		return [funcs, all_funcs, ordered_funcs]
 
 	def get_framework_funcs_info(self, framework_funcs):
-		all_funcs = []
-
-		for framework_data in framework_funcs:
-			all_funcs += framework_data[1]
-
-		return self.get_unused_funcs_info(all_funcs)
+		return self.get_unused_funcs_info(framework_funcs)
 
 	def get_func_info(self):
-		analysis_data = self.analysis.run(self.binary, self.arch)
+		analysis_data = self.analysis.run(self.binary, self.arch, self.r2)
 
 		if self.analysis_type == ANALYSIS_TYPE_UNCALLED_FUNCS:
 			return self.get_unused_funcs_info(analysis_data)
@@ -110,21 +104,28 @@ class BinaryMetadata(object):
 			print "Found {} frameworks:".format(len(analysis_data))
 			for i in xrange(0, len(analysis_data)):
 				print "{} {}".format(i + 1, analysis_data[i][0])
+				if self.verbose:
+					print analysis_data[i][1]
 			
-			return self.get_framework_funcs_info(analysis_data)
-			# if len(analysis_data) == 1:
-			# 	ans = raw_input("Do you wish to remove {}?(y/n)\n".format(analysis_data[i][0]))
-			# 	if ans == 'y':
-			# 		return self.get_framework_funcs_info(analysis_data)
-			# 	else:
-			# 		return None
-			# else:
-			# 	ans = raw_input("Type the number of the framework that you wish to remove from the app ({}-{}, 0 exits):\n".format(0, len(analysis_data)))
-			# 	n = int(ans)
-			# 	if n == 0:
-			# 		return None
-			# 	else:
-			# 		return self.get_framework_funcs_info(analysis_data)
+			#return self.get_framework_funcs_info(analysis_data)
+			if len(analysis_data) == 1:
+				ans = raw_input("Do you wish to remove {}?(y/n)\n".format(analysis_data[i][0]))
+				if ans == 'y' or ans == None:
+					return self.get_framework_funcs_info(analysis_data[1])
+				else:
+					return None
+			else:
+				ans = raw_input("Type the number of the framework that you wish to remove from the app ({}-{}) or a for all:\n".format(1, len(analysis_data)))
+				if ans == 'a':
+					funcs = []
+					for data in analysis_data:
+						funcs += data[1]
+					return self.get_framework_funcs_info(funcs)
+				n = int(ans)
+				if n < 1 or n > len(analysis_data):
+					return None
+				else:
+					return self.get_framework_funcs_info(analysis_data[n - 1][1])
 	
 	def cleanup(self):
 		self.r2.quit()

@@ -4,7 +4,7 @@ import logging
 from binary_metadata import *
 from util import LOGGER_NAME
 
-def run(binary, arch, verbose = False):
+def run(binary, arch, r2 = None, verbose = False):
 	logger = logging.getLogger(LOGGER_NAME)
 	funcs = set()
 	proj = bap.run(binary)
@@ -19,7 +19,7 @@ def run(binary, arch, verbose = False):
 	subs = proj.program.subs
 
 	for sub in subs:
-		if sub.name != "_main" and "stub helpers" not in sub.name:
+		if sub.name != "_main" and "stub helpers" not in sub.name and "stub_helpers" not in sub.name:
 			funcs.add(sub.name)
 
 	if verbose:
@@ -44,23 +44,22 @@ def run(binary, arch, verbose = False):
 		for blk in sub.blks:
 			for jmp in blk.jmps:
 				# ignore returns
-				if isinstance(jmp, bap.bir.Call):
+				if isinstance(jmp, bap.bir.Call) or isinstance(jmp, bap.bir.Goto):
 					if isinstance(jmp.target, tuple):
-						if isinstance(jmp.target[0], bap.bir.Indirect):
-							print "INDIRECT JMP????"
-							print type(jmp.target[0])
-							print jmp.target
-						elif isinstance(jmp.target[0], bap.bir.Direct):
+						if isinstance(jmp.target[0], bap.bir.Direct):
 							for target in jmp.target:
 								funcs.discard(target.arg.name[1:])
-								#print get_object_attrs(target)
 					else:
-						if isinstance(jmp.target, bap.bir.Indirect):
-							print "INDIRECT JMP????"
-							print type(jmp.target)
-							print jmp.target
-						elif isinstance(jmp.target, bap.bir.Direct):
+						if isinstance(jmp.target, bap.bir.Direct):
 							funcs.discard(jmp.target.arg.name[1:])
 
-	print "extra funcs: " + str(funcs)
+	if r2 is not None:
+		r2.cmd("af")
+		results = r2.cmd("afl")
+
+		for line in results.split("\n"):
+			fname = line[(line.rfind(" ") + 1):].replace("sym.", '')
+			if fname in funcs:
+				funcs.remove(fname)
+
 	return funcs

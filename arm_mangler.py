@@ -10,6 +10,13 @@ def hexbytes(insn):
 	elif len(insn.bytes) == 2:
 		return "0x%04x" % (struct.unpack_from('H', b))
 
+def is_insn_branch(insn_id):
+	return insn_id == ARM_INS_B or insn_id == ARM_INS_BL or \
+		insn_id == ARM_INS_BLX or insn_id == ARM_INS_BFC or \
+		insn_id == ARM_INS_BFI or insn_id == ARM_INS_BIC or \
+		insn_id == ARM_INS_BKPT
+
+
 class ARM_Mangler(object):
 	def __init__(self, verbose = False):
 		self.cs_thumb_mi = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
@@ -28,6 +35,20 @@ class ARM_Mangler(object):
 
 		self.verbose = verbose
 
+	def get_nops(self, byte_count, mode = KS_MODE_THUMB):
+		text = bytearray()
+
+		while byte_count > 0:
+			if mode == KS_MODE_THUMB:
+				encoding, count = self.ks_thumb_mi.asm(bytes("nop"))
+				byte_count -= 2
+			else:
+				encoding, count = self.ks_arm_mi.asm(bytes("nop"))
+				byte_count -= 4
+			text += bytearray(encoding)
+
+		return text		
+
 	def get_pad(self, byte_count):
 		if byte_count % 4 == 0:
 			return ''
@@ -45,9 +66,11 @@ class ARM_Mangler(object):
 
 		return text
 
-	def adjust_fn(self, func_meta, func_body, vmaddr, pad, rem_funcs, all_funcs):
+	def adjust_fn(self, func_meta, func_body, vmaddr, pad, dataoff, stubsoff, rem_funcs, all_funcs):
 		new_fn = bytearray()
 		self.verbose = False
+
+		stubsoff += pad
 
 		for insn in self.cs_thumb_mi.disasm(func_body, vmaddr + func_meta[ADDR]):
 			if self.verbose:
@@ -65,7 +88,7 @@ class ARM_Mangler(object):
 						self.movt_imm = i
 						imm = True
 						break
-
+ 
 				if imm:
 					self.movt = insn
 				else:
@@ -121,7 +144,14 @@ class ARM_Mangler(object):
 					# compute the address added to pc
 					total_disp = (self.movt_imm.value.imm << 16) | self.movw_imm.value.imm
 					for func in rem_funcs:
-						if insn.address < vmaddr + all_funcs[func][ADDR]:
+						if insn.address > vmaddr + all_funcs[func][ADDR]:
+							continue
+						elif insn.address + total_disp >= vmaddr + dataoff:
+							diff = all_funcs[func][DIFF]
+							if diff == 0:
+								diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
+							total_disp = total_disp - all_funcs[func][SIZE] - diff
+						elif insn.address < vmaddr + all_funcs[func][ADDR]:
 							diff = all_funcs[func][DIFF]
 							if diff == 0:
 								diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
@@ -160,23 +190,72 @@ class ARM_Mangler(object):
 					self.movt = None
 
 				if len(insn.operands) == 1 and insn.operands[0].type == ARM_OP_IMM and insn.id == ARM_INS_BLX:
-					for i in insn.operands:
-						if i.type != ARM_OP_IMM:
-							print "NOT IMM"
-							break
+					for i in insn.operands:						
 						total_disp = i.value.imm
 						for func in rem_funcs:
-							if insn.address < vmaddr + all_funcs[func][ADDR]:
+							# print hex(vmaddr + all_funcs[func][ADDR])
+							# if insn.address > vmaddr + all_funcs[func][ADDR]:
+							# 	continue
+							if insn.address > vmaddr + all_funcs[func][ADDR] + all_funcs[func][SIZE]:
+								continue
+							diff = all_funcs[func][DIFF]
+							if diff == 0:
+								diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
+
+							if total_disp >= vmaddr + dataoff:
+								diff = all_funcs[func][DIFF]
+								if diff == 0:
+									diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
+								total_disp = total_disp - all_funcs[func][SIZE] - diff
+							if total_disp >= vmaddr + dataoff:
+								continue
+							elif insn.address < vmaddr + all_funcs[func][ADDR]:
+								# blx to stubs
 								diff = all_funcs[func][DIFF]
 								if diff == 0:
 									diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
 								total_disp = total_disp - all_funcs[func][SIZE] - diff
 
+						# do not violate the alignment constraint
+						pc = (insn.address + pad + 4) & 0xFFFFFFFC
 						# current address is pc - 4 for thumb mode
-						asm_str = insn.mnemonic + " " + hex(total_disp - insn.address + 4)
-						print hex(total_disp)
+						if pad > 0:
+							new_addr = total_disp - pc + 8
+						else:
+							new_addr = total_disp - pc + 4
+						asm_str = insn.mnemonic + " " + hex(new_addr)
 						encoding, count = self.ks_thumb_mi.asm(bytes(asm_str))
 						new_fn += bytearray(encoding)
+				elif is_insn_branch(insn.id) and insn.operands[0].type == ARM_OP_IMM:
+					total_disp = insn.operands[0].value.imm + pad - 2
+					new_fn += insn.bytes
+					continue
+					for func in rem_funcs:
+						if insn.address > vmaddr + all_funcs[func][ADDR] + all_funcs[func][SIZE]:
+							continue
+						diff = all_funcs[func][DIFF]
+						if diff == 0:
+							diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
+
+						if total_disp >= vmaddr + dataoff:
+							diff = all_funcs[func][DIFF]
+							if diff == 0:
+								diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
+							total_disp = total_disp - all_funcs[func][SIZE] - diff
+						if total_disp >= vmaddr + dataoff:
+							continue
+						elif insn.address < vmaddr + all_funcs[func][ADDR]:
+							# blx to stubs
+							diff = all_funcs[func][DIFF]
+							if diff == 0:
+								diff = all_funcs[all_funcs[func][PREV_FUNC]][DIFF]
+							total_disp = total_disp - all_funcs[func][SIZE] - diff
+
+					pc = insn.address + 2
+					new_addr = total_disp - pc + 2
+					asm_str = insn.mnemonic + " " + hex(new_addr)
+					encoding, count = self.ks_thumb_mi.asm(insn.mnemonic + " #" + hex(total_disp), insn.address)
+					new_fn += bytearray(encoding)
 				else:
 					encoding, count = self.ks_thumb_mi.asm(bytes(insn.mnemonic + " " + insn.op_str))
 					new_fn += bytearray(encoding)
@@ -210,7 +289,7 @@ class ARM_Mangler(object):
 			data += total_removed
 			packed = struct.pack('<I', data)
 			stubs = stubs[:crt_pos] + packed + stubs[(crt_pos + 4):]
-		
+
 		return stubs
 
 	def adjust_stub_helper(self, stub_helper, vmaddr, helperoff, total_removed):

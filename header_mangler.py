@@ -12,10 +12,11 @@ from x86_64_mangler import *
 from arm_mangler import *
 from binary_metadata import *
 
-SEC_OFFSET = 0
-SEC_SIZE = 1
+SEC_OFFSET 		= 0
+SEC_SIZE 		= 1
 
-OUT_NAME = "removed.out"
+STRATEGY_REMOVE = 0
+STRATEGY_NOPS 	= 1
 
 def dec_syms(syms, amount):
 	if syms - amount < 0:
@@ -24,12 +25,15 @@ def dec_syms(syms, amount):
 		return syms - amount
 
 class HeaderMangler(object):
-	def __init__(self, binary_class, arch, exec_path):
+	def __init__(self, binary_class, arch, exec_path, strategy, verbose = False):
 		self.path = exec_path
 		self.mangled_text_segment = False
 		self.header_analyzed = False
 		self.shrink_by = 0
 		self.header_metadata = None
+
+		self.strategy = strategy
+		self.verbose = verbose
 
 		self.fname = None
 		self.faddr = 0
@@ -45,7 +49,9 @@ class HeaderMangler(object):
 		self.zero_pad = 0
 		self.text_pad = 0
 
-		self.__TEXT_orig = None
+		self.TEXT_orig = None
+		self.fh = None
+		self.out_fh = None
 
 		self.binary_class = binary_class
 
@@ -95,83 +101,11 @@ class HeaderMangler(object):
 
 	def read_TEXT_segment(self, in_fh):
 		in_fh.seek(self.header_metadata.textoffset)
-		self.__TEXT_orig = in_fh.read(self.header_metadata.TEXTsize - self.header_metadata.textoffset)
-
-	# This should be called after the header has been written
-	def new_write_sections(self, in_fh, out_fh, funcs, all_funcs, ordered_funcs):
-		# Write the remaining data between text and the header
-		in_fh.seek(self.header_metadata.textoffset)
-		diff = 0
-
-		out_fh.write(in_fh.read(out_fh.tell() - self.header_metadata.textoffset))
-		first_func = all_funcs[ordered_funcs[0]]
-		out_fh.write(in_fh.read(out_fh.tell() - first_func[ADDR]))
-
-		# Adjust functions
-		for i in xrange(0, len(ordered_funcs)):
-			if ordered_funcs[i] in funcs:
-				continue
-			offset = all_funcs[ordered_funcs[i]][ADDR] - self.header_metadata.textoffset
-			size = all_funcs[ordered_funcs[i]][SIZE]
-			if offset + size > self.header_metadata.textsize:
-				break
-			out_fh.write(self.code_mangler.adjust_fn(all_funcs[ordered_funcs[i]], self.__TEXT_orig[offset:(offset + size)], self.header_metadata.textvmaddr, self.text_pad, funcs, all_funcs))
-
-		print "padding __text with: " + str(self.text_pad)
-		out_fh.write(self.code_mangler.get_pad(self.text_pad))
-
-		stubsoff = self.header_metadata.stubsoff - self.header_metadata.textoffset
-		diff += (stubsoff - self.header_metadata.textsize)
-		out_fh.write(self.__TEXT_orig[self.header_metadata.textsize:stubsoff])
-
-		# Adjust stubs
-		stubs = self.__TEXT_orig[stubsoff:(stubsoff + self.header_metadata.stubssize)]
-		out_fh.write(self.code_mangler.adjust_stubs(stubs, self.header_metadata.textvmaddr, self.header_metadata.stubsoff, self.total_fn_size))
-
-		shoff = self.header_metadata.shoff - self.header_metadata.textoffset
-		start = self.header_metadata.textsize + self.header_metadata.stubssize + diff
-		out_fh.write(self.__TEXT_orig[start:shoff])
-
-		# Adjust stub helper
-		stub_helper = self.__TEXT_orig[shoff:(shoff + self.header_metadata.shsize)]
-		out_fh.write(self.code_mangler.adjust_stub_helper(stub_helper, self.header_metadata.textvmaddr, self.header_metadata.shoff, self.total_fn_size))
-
-		out_fh.write(self.__TEXT_orig[(shoff + self.header_metadata.shsize):])
-
-		# zero padding to assure the __text region fits in one or more pages exactly
-		out_fh.write(bytearray(self.zero_pad))
-
-		in_fh.seek(self.header_metadata.dataoff)
-
-		out_fh.write(in_fh.read(self.header_metadata.nlsymoff - in_fh.tell()))
-		nldata = in_fh.read(self.header_metadata.nlsymsize)
-		out_fh.write(self.adjust_nl_pointers(nldata, self.total_fn_size))
-
-		out_fh.write(in_fh.read(self.header_metadata.lasymoff - in_fh.tell()))
-		ladata = in_fh.read(self.header_metadata.lasymsize)
-		out_fh.write(self.adjust_la_pointers(ladata, self.total_fn_size))
-
-		# write the other regions until we hit the function starts
-		out_fh.write(in_fh.read(self.header_metadata.function_starts_offset - in_fh.tell()))
-		out_fh.write(self.header_metadata.funcs_start_data)
-		in_fh.seek(in_fh.tell() + len(self.header_metadata.funcs_start_data))
-
-		# write the new function starts region
-		out_fh.write(in_fh.read(self.header_metadata.symoff - in_fh.tell()))
-
-		# write the new symtable
-		for sym in self.header_metadata.nlists:
-			if self.binary_class == CLASS_MACHO:
-		 		swap_nlist32_file(sym[0]).to_fileobj(out_fh)
-		 	else:
-		 		swap_nlist64_file(sym[0]).to_fileobj(out_fh)
-
-		# read and write the rest of the file (dysymtable, string table etc.)
-		in_fh.seek(self.header_metadata.symoff + self.header_metadata.symsize)
-		out_fh.write(in_fh.read())
+		self.TEXT_orig = in_fh.read(self.header_metadata.TEXTsize - self.header_metadata.textoffset)
 
 	def adjust_symtable(self, fname):
 		ntype = 36 if self.binary_class == CLASS_MACHO64 else 15
+		return len(self.header_metadata.nlists)
 		copy = list(self.header_metadata.nlists)
 		for i in xrange(len(copy) - 1, -1, -1):
 			if fname in self.header_metadata.nlists[i][1]:
@@ -184,7 +118,6 @@ class HeaderMangler(object):
 				else:
 					del self.header_metadata.nlists[i]
 			elif self.header_metadata.nlists[i][0].n_type == ntype and "_" in self.header_metadata.nlists[i][1]:
-				print "n_value: " + str(self.header_metadata.nlists[i][0].n_value)
 				self.header_metadata.nlists[i][0].n_value -= self.total_fn_size
 				self.header_metadata.nlists[i - 1][0].n_value -= self.total_fn_size
 			elif "_main" in self.header_metadata.nlists[i][1]:
@@ -239,8 +172,8 @@ class HeaderMangler(object):
 		if not self.header_analyzed:
 			self.analyze_header()
 
-		fh = open(self.path, 'rb')
-		self.read_TEXT_segment(fh)
+		self.fh = open(self.path, 'rb')
+		self.read_TEXT_segment(self.fh)
 
 		for f in funcs:
 			self.remove_func(f, all_funcs[f], all_funcs)
@@ -249,15 +182,19 @@ class HeaderMangler(object):
 		self.adjust_lcs()
 		self.adjust_function_starts(funcs, all_funcs)
 
-		out_fh = open(OUT_NAME, 'wb')
-		self.write_header(out_fh, self.total_shrink)
-		self.new_write_sections(fh, out_fh, funcs, all_funcs, ordered_funcs)
-		out_fh.close()
+		if self.strategy == STRATEGY_REMOVE and self.verbose:
+			print "__text size reduced by: " + str(self.total_fn_size + self.total_shrink)
+
+		self.out_fh = open(self.path + "-debloated", 'wb')
+		self.write_header(self.out_fh, self.total_shrink)
 
 	def adjust_lcs(self):
+		if self.strategy == STRATEGY_NOPS:
+			return
+
 		# stubs are in ARM mode (4 bytes / insn) and __text is in thumb mode (2 bytes / insn) 
 		# force the alignment of the stubs region to 4 bytes
-		if self.arch == ARCH_ARM and self.fsize % 4 != 0:
+		if self.arch == ARCH_ARM and self.total_fn_size % 4 != 0:
 			self.text_pad = 2
 			self.fsize -= self.text_pad
 			self.total_fn_size -= self.text_pad
@@ -265,7 +202,7 @@ class HeaderMangler(object):
 
 		# we can't possibly remove an odd number of bytes from ARM code, so something has gone wrong
 		if self.arch == ARCH_ARM:
-			assert(self.fsize % 4 == 0)
+			assert(self.total_fn_size % 4 == 0)
 
 		segtext = self.header_metadata.sections["__TEXT"]["__TEXT"]
 		secttext = self.header_metadata.sections["__TEXT"]["__text"]
@@ -277,23 +214,17 @@ class HeaderMangler(object):
 				if isinstance(cmd, segment_command_64) or isinstance(cmd, segment_command):
 					if SEG_DATA in cmd.segname:
 						cmd.fileoff -= self.shrink_by
-					if cmd.fileoff > secttext.offset:
-						pass
 					if SEG_LINKEDIT in cmd.segname:
 						cmd.filesize = cmd.filesize - self.total_shrink - self.shrink_by
 				elif SEG_TEXT in segname and SECT_TEXT not in cmd.sectname:
-					cmd.addr -= self.fsize
-					cmd.offset -= self.fsize
+					cmd.addr -= self.total_fn_size
+					cmd.offset -= self.total_fn_size
 				else:
-					if SECT_TEXT in cmd.sectname:
-						cmd.size += self.text_pad
-						print "text"
 					if cmd.offset > secttext.offset and SEG_TEXT in segname:
-						print "here"
-						cmd.offset -= self.fsize
+						cmd.offset -= self.total_fn_size
 
 		segtext.filesize -= self.shrink_by
-		secttext.size -= self.fsize
+		secttext.size -= self.total_fn_size
 
 		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].rebase_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].rebase_off, symoff, self.shrink_by, self.total_shrink)
 		self.header_metadata.lcs[LC_DYLD_INFO_ONLY].bind_off = self.adjust_offset(self.header_metadata.lcs[LC_DYLD_INFO_ONLY].bind_off, symoff, self.shrink_by, self.total_shrink)
@@ -308,8 +239,8 @@ class HeaderMangler(object):
 		self.header_metadata.lcs[LC_DYSYMTAB].extreloff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].extreloff, symoff, self.shrink_by, self.total_shrink)
 		self.header_metadata.lcs[LC_DYSYMTAB].locreloff = self.adjust_offset(self.header_metadata.lcs[LC_DYSYMTAB].locreloff, symoff, self.shrink_by, self.total_shrink)
 
-		if LC_ENCRYPTION_INFO_64 in self.header_metadata.lcs:
-			self.header_metadata.lcs[LC_ENCRYPTION_INFO_64].cryptoff = self.adjust_offset(self.header_metadata.lcs[LC_ENCRYPTION_INFO_64].cryptoff, symoff, self.shrink_by, self.total_shrink)
+		if LC_ENCRYPTION_INFO in self.header_metadata.lcs:
+			self.header_metadata.lcs[LC_ENCRYPTION_INFO].cryptoff = self.adjust_offset(self.header_metadata.lcs[LC_ENCRYPTION_INFO].cryptoff, symoff, self.shrink_by, self.total_shrink)
 
 		self.header_metadata.lcs[LC_FUNCTION_STARTS].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_FUNCTION_STARTS].dataoff, symoff, self.shrink_by, self.total_shrink)
 
@@ -318,6 +249,9 @@ class HeaderMangler(object):
 		if LC_DYLIB_CODE_SIGN_DRS in self.header_metadata.lcs:
 			self.header_metadata.lcs[LC_DYLIB_CODE_SIGN_DRS].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_DYLIB_CODE_SIGN_DRS].dataoff, symoff, self.shrink_by, self.total_shrink)
 
+		if LC_CODE_SIGNATURE in self.header_metadata.lcs:
+			self.header_metadata.lcs[LC_CODE_SIGNATURE].dataoff = self.adjust_offset(self.header_metadata.lcs[LC_CODE_SIGNATURE].dataoff, symoff, self.shrink_by, self.total_shrink)
+
 		self.header_metadata.lcs[LC_SYMTAB].symoff -= self.shrink_by
 		self.header_metadata.lcs[LC_SYMTAB].stroff -= self.total_shrink
 
@@ -325,6 +259,9 @@ class HeaderMangler(object):
 		fsize = func[SIZE]
 		faddr = func[ADDR]
 		diff = func[DIFF]
+
+		if self.strategy == STRATEGY_NOPS:
+			return
 
 		if diff == 0:
 			prev_func = func[PREV_FUNC]
@@ -337,12 +274,8 @@ class HeaderMangler(object):
 		self.total_fn_size += self.fsize
 		self.entry_func = all_funcs["entry0"]
 
-		if self.total_fn_size < PAGE_SIZE:
-			self.zero_pad += self.shrink_by
-			self.shrink_by = 0
-		else:
-			# TODO funcs > 4096
-			pass
+		self.zero_pad += self.shrink_by
+		self.shrink_by = 0
 
 		segtext = self.header_metadata.sections["__TEXT"]["__TEXT"]
 		secttext = self.header_metadata.sections["__TEXT"]["__text"]
